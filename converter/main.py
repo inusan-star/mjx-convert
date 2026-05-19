@@ -4,13 +4,37 @@ import json
 import os
 import sys
 from typing import List, Optional
+import logging
+import warnings
 
 import click
 from google.protobuf import json_format
+from rich.logging import RichHandler
+from tqdm import TqdmExperimentalWarning
+from tqdm.rich import tqdm
 
 from . import mjxproto
 from .mjlog_decoder import MjlogDecoder
 from .mjlog_encoder import MjlogEncoder
+
+
+def setup_logging() -> None:
+    """Set up logging configuration."""
+    warnings.filterwarnings("ignore", category=TqdmExperimentalWarning)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(message)s",
+        handlers=[
+            RichHandler(
+                show_level=True,
+                show_path=False,
+                log_time_format="%H:%M:%S",
+                markup=True,
+                rich_tracebacks=True,
+            )
+        ],
+    )
 
 
 @click.group(help="A CLI tool of mjx")
@@ -30,10 +54,7 @@ class LineBuffer:
     def is_new_round_(line):
         d = json.loads(line)
         state = json_format.ParseDict(d, mjxproto.State())
-        return (
-            state.public_observation.init_score.round == 0
-            and state.public_observation.init_score.honba == 0
-        )
+        return state.public_observation.init_score.round == 0 and state.public_observation.init_score.honba == 0
 
     def put(self, line: str) -> None:
         line = line.strip().strip("\n")
@@ -55,9 +76,7 @@ class LineBuffer:
             ), f"Each line should only has one game but has {cnt}\nInput file may miss the last newline character."
             self.buffer_.append([line])  # each line corresponds to each game
 
-    def get(
-        self, get_all: bool = False
-    ) -> List[List[str]]:  # each List[str] corresponds to each game.
+    def get(self, get_all: bool = False) -> List[List[str]]:  # each List[str] corresponds to each game.
         if get_all and len(self.curr_) != 0:
             assert self.fmt_ != "mjlog"
             self.buffer_.append(self.curr_)
@@ -93,8 +112,8 @@ class Converter:
         elif self.fmt_from == "mjlog" and self.fmt_to == "mjxproto_raw":
             self.mjlog2mjxproto = MjlogDecoder(modify=False)
         else:
-            sys.stderr.write(f"Input format = {self.fmt_from}\n")
-            sys.stderr.write(f"Output format = {self.fmt_to}\n")
+            logging.error("Input format = %s", self.fmt_from)
+            logging.error("Output format = %s", self.fmt_to)
             raise ValueError("Input format and output format should be different")
 
     def convert(self, lines: List[str]) -> List[str]:
@@ -192,7 +211,7 @@ def convert(
 
     if not dir_from and not dir_to:  # From stdin
         if verbose:
-            sys.stderr.write(f"Converting to {to()}. stdin => stdout\n")
+            logging.info("Converting to %s. stdin => stdout", to())
 
         itr = StdinIterator()
         for line in itr:
@@ -220,22 +239,16 @@ def convert(
 
     else:  # From files
         if verbose:
-            sys.stderr.write(f"Converting to {to()}. {dir_from} => {dir_to}\n")
+            logging.info("Converting to %s. %s => %s", to(), dir_from, dir_to)
 
         to_type = to()
         to_ext = "mjlog" if to_type == "mjlog" else "json"
         num_mjlog = sum([1 for x in os.listdir(dir_from) if x.endswith("mjlog")])
         num_mjxproto = sum([1 for x in os.listdir(dir_from) if x.endswith("json")])
-        assert not (
-            num_mjlog > 0 and num_mjxproto > 0
-        ), "There are two different formats in source directory."
-        assert (
-            num_mjlog > 0 or num_mjxproto > 0
-        ), "There are no valid file formats in the source directory."
-        for file_from in os.listdir(dir_from):
-            if not file_from.endswith("json") and not file_from.endswith("mjlog"):
-                continue
-
+        assert not (num_mjlog > 0 and num_mjxproto > 0), "There are two different formats in source directory."
+        assert num_mjlog > 0 or num_mjxproto > 0, "There are no valid file formats in the source directory."
+        all_files = [f for f in os.listdir(dir_from) if f.endswith("mjlog") or f.endswith("json")]
+        for file_from in tqdm(all_files, desc="Converting", unit="file"):
             path_from = os.path.join(dir_from, file_from)
             path_to = os.path.join(
                 dir_to,
@@ -243,7 +256,7 @@ def convert(
             )
 
             if verbose:
-                sys.stderr.write(f"Converting {path_from} to {path_to}\n")
+                logging.info("Converting %s to %s", path_from, path_to)
 
             # 読み込み（全てのフォーマットで、１ファイル１半荘を想定）
             transformed_lines: List[str] = []
@@ -264,7 +277,7 @@ def convert(
             # 変換
             assert buffer is not None
             list_lines: List[List[str]] = buffer.get(get_all=True)
-            assert len(list_lines) == 1, "Each file should have one game"
+            assert len(list_lines) == 0 or len(list_lines) == 1, "Each file should have zero or one game."
             assert converter is not None
             transformed_lines += converter.convert(list_lines[0])
 
@@ -275,6 +288,7 @@ def convert(
 
 
 def main():
+    setup_logging()
     cli()
 
 
